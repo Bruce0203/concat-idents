@@ -6,14 +6,13 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 
 use quote::quote;
-use syn::{
-    Block, Ident, LitBool, LitByte, LitByteStr,
-    LitChar, LitFloat, LitInt, LitStr, parse_macro_input, Token, visit_mut,
-};
 use syn::parse::{self, Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::token::Underscore;
-use syn::visit_mut::VisitMut;
+use syn::{
+    parse_macro_input, Block, Ident, LitBool, LitByte, LitByteStr, LitChar, LitFloat, LitInt,
+    LitStr, Token,
+};
 
 #[cfg(test)]
 mod tests {
@@ -41,7 +40,7 @@ mod tests {
 struct InputParser {
     replace_ident: Ident,
     concatenated_ident: Ident,
-    block: Block,
+    block: proc_macro2::TokenStream,
 }
 
 impl Parse for InputParser {
@@ -50,7 +49,8 @@ impl Parse for InputParser {
         let _: Token![=] = input.parse()?;
         let IdentParser(concatenated_ident) = input.parse()?;
         let block: Block = input.parse()?;
-
+        let stmts = block.stmts;
+        let block = quote! {#(#stmts)*};
         Ok(InputParser {
             replace_ident,
             concatenated_ident,
@@ -88,22 +88,30 @@ impl Parse for IdentParser {
             Some(IdentPart::Char(c)) => c.span(),
             Some(IdentPart::Bool(b)) if ident_parts.len() > 1 => b.span(),
 
-            Some(IdentPart::Bool(b)) => return Err(syn::Error::new(
-                b.span(),
-                "Identifiers cannot consist of only one bool",
-            )),
-            Some(IdentPart::Int(i)) if ident_parts.len() > 1 => return Err(syn::Error::new(
-                i.span(),
-                "Identifiers cannot start with integers",
-            )),
-            Some(IdentPart::Int(i)) => return Err(syn::Error::new(
-                i.span(),
-                "Identifiers cannot start nor consist only of integers with integers",
-            )),
-            None => return Err(syn::Error::new(
-                input.span(),
-                "Expected at least one identifier",
-            ))
+            Some(IdentPart::Bool(b)) => {
+                return Err(syn::Error::new(
+                    b.span(),
+                    "Identifiers cannot consist of only one bool",
+                ))
+            }
+            Some(IdentPart::Int(i)) if ident_parts.len() > 1 => {
+                return Err(syn::Error::new(
+                    i.span(),
+                    "Identifiers cannot start with integers",
+                ))
+            }
+            Some(IdentPart::Int(i)) => {
+                return Err(syn::Error::new(
+                    i.span(),
+                    "Identifiers cannot start nor consist only of integers with integers",
+                ))
+            }
+            None => {
+                return Err(syn::Error::new(
+                    input.span(),
+                    "Expected at least one identifier",
+                ))
+            }
         };
 
         let mut ident = String::new();
@@ -115,7 +123,7 @@ impl Parse for IdentParser {
                 IdentPart::Int(i) => ident.push_str(i.to_string().as_str()),
                 IdentPart::Bool(b) => ident.push_str(b.value.to_string().as_str()),
                 IdentPart::Str(s) => ident.push_str(s.value().as_str()),
-                IdentPart::Char(c) => ident.push(c.value())
+                IdentPart::Char(c) => ident.push(c.value()),
             }
         }
 
@@ -125,7 +133,7 @@ impl Parse for IdentParser {
 
 /// A helper struct, that represents a valid part of an identifier. Does not guarantee, that
 /// this specific part is a fully qualified identifier.
-/// 
+///
 /// ```text
 /// ident1, ident2, _, 3, _, true
 /// => ident1, ident2, _, 3, _, true
@@ -151,7 +159,10 @@ impl Parse for IdentPart {
             Ok(Self::Bool(input.parse()?))
         } else if input.peek(LitStr) {
             let string = input.parse::<LitStr>()?;
-            if string.value().contains(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+            if string
+                .value()
+                .contains(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            {
                 Err(syn::Error::new(
                     string.span(),
                     "Identifier parts can only contain [a-zA-Z0-9_]",
@@ -171,11 +182,20 @@ impl Parse for IdentPart {
                 Ok(Self::Char(char))
             }
         } else if input.peek(LitByteStr) {
-            Err(syn::Error::new(input.span(), "Identifiers cannot contain byte string"))
+            Err(syn::Error::new(
+                input.span(),
+                "Identifiers cannot contain byte string",
+            ))
         } else if input.peek(LitByte) {
-            Err(syn::Error::new(input.span(), "Identifiers cannot contain bytes"))
+            Err(syn::Error::new(
+                input.span(),
+                "Identifiers cannot contain bytes",
+            ))
         } else if input.peek(LitFloat) {
-            Err(syn::Error::new(input.span(), "Identifiers cannot contain floats"))
+            Err(syn::Error::new(
+                input.span(),
+                "Identifiers cannot contain floats",
+            ))
         } else {
             Err(syn::Error::new(
                 input.span(),
@@ -193,7 +213,7 @@ impl Parse for IdentPart {
 struct IdentReplacer {
     replace_ident: Ident,
     concatenated_ident: Ident,
-    code_block: Option<Block>,
+    code_block: proc_macro2::TokenStream,
 }
 
 impl IdentReplacer {
@@ -202,36 +222,30 @@ impl IdentReplacer {
         Self {
             replace_ident: input_parser.replace_ident,
             concatenated_ident: input_parser.concatenated_ident,
-            code_block: Some(input_parser.block),
+            code_block: input_parser.block,
         }
     }
 
     /// Replaces all `replace_idents` in the `code_block` with the `concatenated_ident`
     fn replace_idents(mut self) -> Self {
-        let mut code = self.code_block
-            .take()
-            .unwrap();
-        self.visit_block_mut(&mut code);
-        self.code_block = Some(code);
-
+        let mut token_trees = self.code_block.clone().into_iter().collect::<Vec<_>>();
+        for token_tree in token_trees.iter_mut() {
+            match token_tree {
+                proc_macro2::TokenTree::Ident(ref mut ident) => {
+                    if *ident == self.replace_ident {
+                        *ident = self.concatenated_ident.clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.code_block = quote! { #(#token_trees)* };
         self
     }
 
     /// generates a TokenStream from the code-block
     fn produce_token_stream(self) -> TokenStream {
-        let statements = self.code_block.unwrap().stmts;
-        (quote! { #( #statements )* }).into()
-    }
-}
-
-impl VisitMut for IdentReplacer {
-    fn visit_ident_mut(&mut self, node: &mut Ident) {
-        if *node == self.replace_ident {
-            *node = self.concatenated_ident.clone();
-        }
-
-        // Delegate to the default impl
-        visit_mut::visit_ident_mut(self, node);
+        self.code_block.into()
     }
 }
 

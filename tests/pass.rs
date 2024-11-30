@@ -65,24 +65,33 @@ concat_idents!(fn_name = "super", _, is, _also_possible {
     }
 });
 
-concat_idents!(fn_name = _works_, r#while, '_', 1, stuff_, is, _, "mixed",   {
-    fn fn_name() {
-        println!("works with quoted reserved keywords!");
+concat_idents!(
+    fn_name = _works_,
+    r#while,
+    '_',
+    1,
+    stuff_,
+    is,
+    _,
+    "mixed",
+    {
+        fn fn_name() {
+            println!("works with quoted reserved keywords!");
+        }
     }
-});
+);
 
 macro_rules! nested {
     () => {
         concat_idents!(fn_name = outer {
             concat_idents!(something = inner {
-                
+
             });
         });
     };
 }
 
 nested!();
-
 
 macro_rules! create_test {
     ($ident1:ident, $ident2:ident) => {
