@@ -65,6 +65,19 @@ concat_idents!(fn_name = "super", _, is, _also_possible {
     }
 });
 
+pub trait Foo {
+    concat_idents!(fn_name = encode_value, {
+        fn fn_name();
+    });
+}
+
+const _: () = {
+    struct Bar;
+    impl Foo for Bar {
+        fn encode_value() {}
+    }
+};
+
 concat_idents!(
     fn_name = _works_,
     r#while,
